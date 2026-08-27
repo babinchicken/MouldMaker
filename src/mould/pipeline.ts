@@ -66,6 +66,10 @@ const MIN_KEY_LIP_MM = 2
  */
 const SILICONE_DENSITY_G_PER_ML = 1.1
 
+/** The reinforced top section uses a deeper silicone skin to help it fill. */
+const TOP_SKIN_FRACTION = 0.20
+const TOP_SKIN_THICKNESS_MM = 10
+
 export type Progress = (stage: string, fraction: number) => void
 
 export interface BuildOptions {
@@ -125,9 +129,19 @@ export async function buildMould(
   geometry.computeBoundingBox()
   const master = geometry.boundingBox!
   const seatZ = params.plinthHeightMM
+  const topSkinStartZ = master.min.z + (master.max.z - master.min.z) * (1 - TOP_SKIN_FRACTION)
+  const topSkinThickness = Math.max(params.siliconeThicknessMM, TOP_SKIN_THICKNESS_MM)
+  const skinThicknessAt = (z: number): number => {
+    if (z <= topSkinStartZ || topSkinThickness === params.siliconeThicknessMM) {
+      return params.siliconeThicknessMM
+    }
+    const progress = Math.min(1, (z - topSkinStartZ) / (master.max.z - topSkinStartZ))
+    return params.siliconeThicknessMM + (topSkinThickness - params.siliconeThicknessMM) * progress
+  }
 
   // ── Signed distance field around the master ──
-  const grow = params.siliconeThicknessMM + params.jacketWallMM
+  const maximumSkin = topSkinThickness
+  const grow = maximumSkin + params.jacketWallMM
   const pad = grow + params.resolutionMM * 3
   const bounds = master.clone().expandByScalar(pad)
   const gridSize = new THREE.Vector3()
@@ -178,12 +192,16 @@ export async function buildMould(
 
   let jacket: ReturnType<typeof buildJacket>
   try {
+    const variableField = (wallExtra: number) => (point: [number, number, number]) =>
+      sample(point) + skinThicknessAt(point[2]) + wallExtra
     onProgress('Growing the silicone skin', 0.35)
     const siliconeOuter = arena.keep(
-      Manifold.levelSet(sample, levelBounds, params.resolutionMM, -params.siliconeThicknessMM),
+      Manifold.levelSet(variableField(0), levelBounds, params.resolutionMM, 0),
     )
     onProgress('Growing the jacket shell', 0.55)
-    const jacketOuter = arena.keep(Manifold.levelSet(sample, levelBounds, params.resolutionMM, -grow))
+    const jacketOuter = arena.keep(
+      Manifold.levelSet(variableField(params.jacketWallMM), levelBounds, params.resolutionMM, 0),
+    )
     const cavityTopZ = siliconeOuter.boundingBox().max[2]
 
     onProgress('Building the jacket', 0.75)
@@ -243,13 +261,14 @@ export async function buildMould(
     { name: 'jacket-back.stl', soup: backSoup, stl: writeBinaryStl([backSoup]) },
   ]
 
-  // Straight off the distance grid: everything within one silicone thickness of
-  // the master, less the master itself. The grid cannot see anything cut or added
-  // by boolean after it was measured, so the brim and the pour channels are carried
+  // Straight off the distance grid: each height band uses the offset that built its
+  // skin, less the master itself. The grid cannot see anything cut or added by
+  // boolean after it was measured, so the brim and the pour channels are carried
   // separately — miss one and the readout quietly asks you to mix too little.
   const skinMM3 = Math.max(
     0,
-    occupiedVolume(grid, -params.siliconeThicknessMM, seatZ) - occupiedVolume(grid, 0, seatZ),
+    occupiedVolume(grid, (z) => -skinThicknessAt(z), seatZ) -
+      occupiedVolume(grid, 0, seatZ),
   )
   const siliconeMM3 = skinMM3 + jacket.brimExtraMM3 + jacket.boreExtraMM3
   const pour = params.sprueMode === 'pair'

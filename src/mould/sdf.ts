@@ -182,12 +182,17 @@ export function sampler(grid: DistanceGrid): (p: [number, number, number]) => nu
  * moment the two that matter are already resident — and the answer is a figure to
  * mix by, where a percent either way is noise.
  */
-export function occupiedVolume(grid: DistanceGrid, level: number, minZ: number): number {
+export function occupiedVolume(
+  grid: DistanceGrid,
+  level: number | ((z: number) => number),
+  minZ: number,
+): number {
   const { data, nx, ny, nz, originZ, spacing } = grid
   const cell = spacing ** 3
   let occupancy = 0
   for (let k = 0; k < nz; k++) {
-    if (originZ + k * spacing < minZ) continue
+    const z = originZ + k * spacing
+    if (z < minZ) continue
     const plane = k * ny
     for (let j = 0; j < ny; j++) {
       const row = (plane + j) * nx
@@ -196,7 +201,8 @@ export function occupiedVolume(grid: DistanceGrid, level: number, minZ: number):
         // Counting them all-or-nothing biases a 3mm shell low by around a tenth,
         // which is the wrong direction to be wrong in when it tells you how much
         // silicone to mix.
-        const excess = (data[row + i] - level) / spacing + 0.5
+        const threshold = typeof level === 'function' ? level(z) : level
+        const excess = (data[row + i] - threshold) / spacing + 0.5
         occupancy += excess <= 0 ? 0 : excess >= 1 ? 1 : excess
       }
     }
